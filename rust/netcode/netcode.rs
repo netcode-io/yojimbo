@@ -6426,41 +6426,57 @@ pub fn netcode_ctime() -> u64
 
 static netcode_time_start: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
+// port: <time.h>'s nanosleep, called directly and not through std::thread::sleep, which makes no system call at all
+// for a zero duration. Upstream's netcode_sleep( 0.0 ) is a real nanosleep, which gives up the CPU (Linux pads it
+// with the timer slack): tests that pump client and server over real sockets in a tight loop depend on that to let
+// the kernel deliver their loopback packets, which Linux does asynchronously, between frames.
+#[cfg(unix)]
+mod netcode_time_ffi
+{
+    use std::ffi::{ c_int, c_long };
+
+    // port: time_t is a long on Linux / Android, Apple platforms and FreeBSD
+    #[repr(C)]
+    pub struct timespec
+    {
+        pub tv_sec: c_long,
+        pub tv_nsec: c_long,
+    }
+
+    extern "C"
+    {
+        pub fn nanosleep( req: *const timespec, rem: *mut timespec ) -> c_int;
+    }
+}
+
 #[cfg(target_os = "macos")]
 // MacOS
 pub fn netcode_sleep( time: f64 )
 {
-    // port: nanosleep( { (time_t) time, (long) ( ( time - tv_sec ) * 1000000000.0 ) } )
-    let tv_sec = time as i64;
-    let tv_nsec = ( ( time - tv_sec as f64 ) * 1000000000.0 ) as i64;
-    if tv_sec < 0 || tv_nsec < 0
-    {
-        return;
-    }
-    std::thread::sleep( std::time::Duration::new( tv_sec as u64, tv_nsec.min( 999_999_999 ) as u32 ) );
+    let mut ts = netcode_time_ffi::timespec { tv_sec: 0, tv_nsec: 0 };
+    ts.tv_sec = time as std::ffi::c_long;
+    ts.tv_nsec = ( ( time - ( ts.tv_sec as f64 ) ) * 1000000000.0 ) as std::ffi::c_long;
+    unsafe { netcode_time_ffi::nanosleep( &ts, std::ptr::null_mut() ); }
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
 // linux and other unix systems (openbsd, freebsd etc.)
 pub fn netcode_sleep( time: f64 )
 {
-    // port: nanosleep( { (time_t) time, (long) ( ( time - tv_sec ) * 1000000000.0 ) } )
-    let tv_sec = time as i64;
-    let tv_nsec = ( ( time - tv_sec as f64 ) * 1000000000.0 ) as i64;
-    if tv_sec < 0 || tv_nsec < 0
-    {
-        return;
-    }
-    std::thread::sleep( std::time::Duration::new( tv_sec as u64, tv_nsec.min( 999_999_999 ) as u32 ) );
+    let mut ts = netcode_time_ffi::timespec { tv_sec: 0, tv_nsec: 0 };
+    ts.tv_sec = time as std::ffi::c_long;
+    ts.tv_nsec = ( ( time - ( ts.tv_sec as f64 ) ) * 1000000000.0 ) as std::ffi::c_long;
+    unsafe { netcode_time_ffi::nanosleep( &ts, std::ptr::null_mut() ); }
 }
 
 #[cfg(windows)]
 // windows
 pub fn netcode_sleep( time: f64 )
 {
-    // port: Sleep( (int) ( time * 1000 ) )
+    // port: Sleep( (int) ( time * 1000 ) ) is std::thread::sleep, which calls Sleep( 0 ) for a zero duration as
+    // upstream does. A negative time is skipped (upstream passes it to Sleep as a huge DWORD).
     let milliseconds = ( time * 1000.0 ) as i32;
-    if milliseconds > 0
+    if milliseconds >= 0
     {
         std::thread::sleep( std::time::Duration::from_millis( milliseconds as u64 ) );
     }

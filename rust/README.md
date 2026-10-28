@@ -1,6 +1,6 @@
 # yojimbo (Rust)
 
-Rust port of yojimbo 1.13.5, with netcode 1.4.8, reliable 1.4.5, serialize, the TLSF allocator and the libsodium subset netcode uses. No dependencies: the crypto, the allocator and the socket layer are ported, not imported.
+Rust port of yojimbo 1.13.5, with netcode 1.4.8, reliable 1.4.5, serialize, the TLSF allocator and the libsodium subset netcode uses. No dependencies: the crypto, the allocator and the socket layer are ported, not imported. [rust.md](rust.md) records what is verified, the open bugs, the deviations from upstream and the known gaps.
 
 ```bash
 cargo build --manifest-path rust/Cargo.toml                  # add --release for release
@@ -76,7 +76,7 @@ The rules are mechanical so that files ported separately fit together:
 
 ### Platform
 
-- Time is `std::time::Instant`, sleep is `std::thread::sleep`, random bytes come from the OS (`sodium/sodium.rs` ports libsodium's `randombytes` sysrandom with a few lines of FFI per platform, as upstream: `RtlGenRandom` on Windows, `getrandom()` with a `/dev/urandom` fallback on Linux and FreeBSD, `/dev/urandom` on macOS, `arc4random` on OpenBSD).
+- Time is `std::time::Instant`. Sleep is `nanosleep` / `usleep` called directly on unix, as upstream, because `std::thread::sleep` makes no system call for a zero duration and the tests rely on `yojimbo_sleep( 0.0 )` giving up the CPU so Linux delivers loopback packets between frames; on Windows it is `std::thread::sleep`, which calls `Sleep( 0 )` for zero. Random bytes come from the OS (`sodium/sodium.rs` ports libsodium's `randombytes` sysrandom with a few lines of FFI per platform, as upstream: `RtlGenRandom` on Windows, `getrandom()` with a `/dev/urandom` fallback on Linux and FreeBSD, `/dev/urandom` on macOS, `arc4random` on OpenBSD).
 - netcode's sockets are `std::net::UdpSocket` (non-blocking). Options std lacks (`SO_SNDBUF`, `SO_RCVBUF`, `IPV6_V6ONLY` before bind) are set with minimal `extern` FFI on the raw socket. No crates.
 
 ## Port additions

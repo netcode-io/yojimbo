@@ -594,6 +594,7 @@ For local development, `client.InsecureConnect(privateKey, clientId, serverAddre
 
 ## Pitfalls
 
+- **Yield every frame:** a loop over real sockets must sleep or yield between frames. On Linux, loopback UDP is delivered asynchronously, so a busy loop that never yields can starve its own packets for hundreds of frames and time connections out. A zero-length sleep is enough in C# (`yojimbo.sleep( 0 )`, `Thread.Sleep( 0 )`) and Rust (`yojimbo_sleep( 0.0 )`, which calls `usleep`/`Sleep( 0 )` as upstream); in TypeScript, `await yojimbo_sleep( 0 )` between frames so the event loop drains the sockets.
 - **Message ownership:**
   - Release every message you receive (`ReleaseMessage`).
   - Don't touch a message after `SendMessage`.
@@ -616,4 +617,5 @@ For local development, `client.InsecureConnect(privateKey, clientId, serverAddre
 - [README.md](README.md): layout, build and test commands, interop and CI.
 - [ts/README.md](ts/README.md): TypeScript conventions and WebRTC deployment details.
 - [rust/README.md](rust/README.md): Rust conventions (names, pointers and memory, macros).
+- [rust/rust.md](rust/rust.md): the Rust port's status: what is verified on which platform, open bugs, deviations from upstream and known gaps.
 - Upstream [USAGE.md](cpp/USAGE.md) and [STATE-MACHINE.md](cpp/STATE-MACHINE.md): the C++ API docs. The ports keep the same names, and they apply here.

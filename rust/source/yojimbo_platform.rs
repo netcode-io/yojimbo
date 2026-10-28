@@ -33,14 +33,15 @@
         and panics (upstream: __builtin_trap / __debugbreak).
       - The globals (log level, printf and assert hooks) are an atomic and mutexes; the library is single-threaded by
         design, as upstream.
-      - Time is std::time::Instant and sleep is std::thread::sleep (see README.md, "Platform"), in place of the
-        per-platform mach_absolute_time / clock_gettime / QueryPerformanceCounter and usleep / Sleep paths.
+      - Time is std::time::Instant (see README.md, "Platform"), in place of the per-platform mach_absolute_time /
+        clock_gettime / QueryPerformanceCounter paths. Sleep is usleep on unix, called directly, and std::thread::sleep
+        (which calls Sleep) on Windows.
 */
 
 use crate::*;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 // port: yojimbo_sleep and yojimbo_time, declared here upstream, are defined at the end of the file
 
@@ -198,21 +199,36 @@ pub fn yojimbo_printf( level: i32, args: std::fmt::Arguments )
 pub fn yojimbo_sleep( time: f64 )
 {
     let milliseconds = ( time * 1000.0 ) as i32;
-    // port: Sleep( milliseconds )
-    if milliseconds > 0
+    // port: Sleep( milliseconds ) is std::thread::sleep, which calls Sleep( 0 ) for a zero duration as upstream does.
+    // A negative time is skipped (upstream passes it to Sleep as a huge DWORD).
+    if milliseconds >= 0
     {
-        std::thread::sleep( Duration::from_millis( milliseconds as u64 ) );
+        std::thread::sleep( std::time::Duration::from_millis( milliseconds as u64 ) );
+    }
+}
+
+// port: <unistd.h>'s usleep, called directly and not through std::thread::sleep, which makes no system call at all for
+// a zero duration. Upstream's yojimbo_sleep( 0.0 ) is a real usleep( 0 ), which gives up the CPU (Linux pads it with
+// the timer slack): the tests pump client and server over real sockets in a tight loop and depend on it to let the
+// kernel deliver their loopback packets, which Linux does asynchronously, between frames.
+#[cfg(not(windows))]
+mod yojimbo_platform_ffi
+{
+    extern "C"
+    {
+        pub fn usleep( usec: std::ffi::c_uint ) -> std::ffi::c_int;
     }
 }
 
 #[cfg(not(windows))]
 pub fn yojimbo_sleep( time: f64 )
 {
-    // port: usleep( (int) ( time * 1000000 ) )
+    // port: usleep( (int) ( time * 1000000 ) ). A negative time is skipped (upstream passes it to usleep as a huge
+    // useconds_t).
     let microseconds = ( time * 1000000.0 ) as i32;
-    if microseconds > 0
+    if microseconds >= 0
     {
-        std::thread::sleep( Duration::from_micros( microseconds as u64 ) );
+        unsafe { yojimbo_platform_ffi::usleep( microseconds as std::ffi::c_uint ); }
     }
 }
 

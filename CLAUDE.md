@@ -38,7 +38,8 @@ cargo run --manifest-path rust/Cargo.toml --bin fuzz          # upstream fuzz co
 interop/run.sh                                                # needs cc/c++, .NET 10, Node 24, cargo
 ```
 
-- **Tests bind fixed UDP ports** (40000, 30000, ...), so never run two suites at the same time. A "bind failed" or "server_create failed" error often just means another run held the port; rerun before debugging.
+- **Tests bind fixed UDP ports** (40000, 30000, ...), so never run two suites at the same time. A "bind failed" or "server_create failed" error often just means another run held the port; rerun before debugging. On Windows with WSL's mirrored networking, a running WSL VM holds UDP 39160 and up: run `wsl --shutdown` before the Windows suites.
+- **Linux from Windows:** WSL (Ubuntu 22.04 here) has Rust and gcc but no .NET or Node. Copy the worktree into the Linux filesystem (not `/mnt/f`) and build there. Run scripts as `wsl -e bash /mnt/c/.../script.sh`: inline `wsl -e bash -lc '...'` quoting through PowerShell breaks.
 - **CI:** `.github/workflows/cs.yml` runs C# on Linux, macOS and Windows plus interop; `ts.yml` runs TypeScript on all three, plus a `browser` job (headless Chromium, Linux); `rust.yml` runs Rust debug and release on all three plus interop. All must stay green. `upstream.yml` runs weekly and keeps one `upstream-sync` issue open while upstream is past the pin.
 
 ## Port conventions
@@ -49,7 +50,7 @@ interop/run.sh                                                # needs cc/c++, .N
   - Run the tests against that build with `dotnet build cs/test.csproj -p:YojimboTargetFramework=netstandard2.1 -p:BuildRoot=<other dir>/`. Use a separate output folder so the default build isn't overwritten. CI runs both.
 - **Port additions** (not in upstream; keep them through upstream syncs, in every port): `ChannelConfig.allocateBlocksOnDemand` (on-demand block receive buffers in the reliable-ordered channel, tested by `test_connection_reliable_ordered_blocks_on_demand`) and `TLSF_Allocator.GetUsedBytes()`/`GetCapacityBytes()`. Mark any new one with a "port addition" comment where it lives.
 - **C#:** C-style names as upstream (`netcode.client_create`, `reliable.endpoint_send_packet`, the `yojimbo` static class for free functions). The stream `serialize_*` extension methods return bool; every call site must propagate a failure. The allocator semantics are real (error level, leak tracking, failure injection in tests).
-- **Rust:** see [rust/README.md](rust/README.md), which holds the binding conventions.
+- **Rust:** see [rust/README.md](rust/README.md), which holds the binding conventions, and [rust/rust.md](rust/rust.md), the port's verification status, open bugs, deviations and gaps. Update `rust.md` when you close a gap or find a new one.
   - Upstream names verbatim (`netcode_client_create`, `Client::Connect`, `m_clientIndex`); the crate allows the casing. Enums are `pub const` `i32`s, and Rust keywords are raw identifiers (`r#type`).
   - The pointer rules are mechanical, so separately ported files fit together:
     - buffers are slices and keep their length parameter, and out-parameters are `&mut T`;
@@ -57,6 +58,7 @@ interop/run.sh                                                # needs cc/c++, .N
     - yojimbo's C++ object graph stays raw pointers (`*mut dyn Allocator`, `*mut dyn Message`, ...), created and destroyed through the `Allocator` (`YOJIMBO_NEW!` / `YOJIMBO_DELETE!`), so allocation failure, budgets and leak tracking behave as upstream. Null trait pointers come from `null_<trait>()`.
   - Virtual classes are a trait plus a `<Class>Base` struct. `BaseClient`/`BaseServer` call back into `Client`/`Server` through `BaseClientVirtual`/`BaseServerVirtual`. `Client::new` / `Server::new` return `Box<_>`: netcode and reliable keep a raw context pointer to the object, so it must not move.
   - `serialize_*!` macros keep upstream names and return `false` from the enclosing fn on failure. A stream's allocator `void *` carries a pointer to the `*mut dyn Allocator` (`AllocatorToContext` / `AllocatorFromContext`, `MessageFactory::GetAllocatorContext`).
+  - Keep upstream's system calls where their side effect matters: `yojimbo_sleep( 0.0 )` / `netcode_sleep` must yield (`usleep`/`nanosleep` on unix, `Sleep( 0 )` on Windows). `std::thread::sleep` makes no system call for zero, and skipping the yield broke the UDP tests on Linux only. See [rust/rust.md](rust/rust.md).
   - C wraps unsigned arithmetic, so write `wrapping_*`. `overflow-checks` is off in every profile as a safety net.
   - Library tests stay in the library file (`serialize_test`, `netcode_test`, `reliable_test`), and test-local macros are plain `macro_rules!`. Don't `include!` a file whose `#[macro_export]` macros are used through `$crate::`: it fails to compile.
   - The netcode/reliable allocator callbacks stay in the configs, but buffers are `Vec`/`Box`, as in C#. The netcode client/server and network simulator still ask `allocate_function` first, so upstream's allocation-failure tests run.
@@ -90,7 +92,7 @@ interop/run.sh                                                # needs cc/c++, .N
   - **npm:** only `ts/dist` library files (`files` in `ts/package.json`) and `LICENCE`, which `prepack` copies from the root.
   - **npm entry points:** `.`, `./netcode`, `./reliable`, `./serialize`, `./sodium`, `./webrtc/client`, `./webrtc/server`, `./webrtc/server-http`, `./webrtc/token`. Deep imports are blocked.
   - **NuGet:** `lib/net10.0` and `lib/netstandard2.1`, plus a symbols package.
-  - **crates.io:** the library sources only (`include` in `rust/Cargo.toml`), `rust/README.md` and `rust/LICENCE`, a copy of the root `LICENCE` (keep them identical).
+  - **crates.io:** the library sources only (`include` in `rust/Cargo.toml`), `rust/README.md`, `rust/rust.md` and `rust/LICENCE`, a copy of the root `LICENCE` (keep them identical).
 - **Before a release that changes packaging,** prove the packages from the consumer side:
   - `npm pack`, install the tarball into a scratch project, then type-check with full lib checking, run an example and bundle for the browser with esbuild;
   - `dotnet pack` to a local feed, then `dotnet add package yojimbo --source <feed>` and run an example;
