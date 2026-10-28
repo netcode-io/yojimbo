@@ -3,9 +3,10 @@
     Upstream change report for the ports.
 
     Lists the upstream yojimbo commits past the cpp/ submodule pin and the upstream files they change, maps each
-    file onto the C# and TypeScript files that mirror it (MAP below is the one place the mirroring rules live) and
-    prints a Markdown report: the commits, a checklist of port files to update with the upstream diff stat behind
-    each, the upstream files with no port counterpart, and the vendored library versions when they move.
+    file onto the C#, TypeScript and Rust files that mirror it (PORTS and MAP below are the one place the mirroring
+    rules live) and prints a Markdown report: the commits, a checklist per port of the files to update with the
+    upstream diff stat behind each, the upstream files with no port counterpart, and the vendored library versions
+    when they move.
 
         node tools/upstream_diff.mjs                       fetch upstream's default branch and diff the pin against it
         node tools/upstream_diff.mjs --to v1.14.0          fetch and diff a branch, tag or commit instead
@@ -29,26 +30,39 @@ const UPSTREAM_URL = `https://github.com/${UPSTREAM}.git`;
 const REPORT_LIMIT = 60000;             // characters: a GitHub issue body holds 65536
 const LIST_LIMIT = 20;                  // entries shown per group of files with no port work
 
+// the ports, in report order: id is the key MAP rules use, title heads the port's report section
+const PORTS = [
+    { id: 'cs', title: 'C# (`cs/`)' },
+    { id: 'ts', title: 'TypeScript (`ts/`)' },
+    { id: 'rs', title: 'Rust (`rust/`)' },
+];
+
 /*
     Upstream path -> port files. The first rule whose pattern matches wins; $1.. are the pattern's groups.
-    cs / ts name the mirroring file, or null when that port has no counterpart (note says why). A rule with only
-    a note is informational: the file has no port counterpart by design. `ifUpstream` makes a rule apply only
-    when that upstream file exists (a header with a source collapses into the source's file).
+    A ported rule names every port in PORTS by its id, as one of:
+        'path'              the mirroring file
+        { file, note }      the mirroring file, with a note on how it mirrors the upstream file
+        null                no counterpart in that port (the rule's note says why)
+    The rule's note goes on every port's file when no port is null, and only on the null ports otherwise. A rule
+    with only a note is informational: the file has no port counterpart by design. `ifUpstream` makes a rule apply
+    only when that upstream file exists (a header with a source collapses into the source's file).
 */
+const TLSF_EMULATED = 'the TLSF heap is emulated as a byte budget; check its overheads still match';
 const MAP = [
     { from: /^\.github\/|(^|\/)\.[^/]+$/, note: 'upstream CI and repo config' },
-    { from: /^include\/(yojimbo\w*)\.h$/, ifUpstream: 'source/$1.cpp', cs: 'cs/source/$1.cs', ts: 'ts/source/$1.ts' },
-    { from: /^include\/(yojimbo\w*)\.h$/, cs: 'cs/include/$1.cs', ts: 'ts/include/$1.ts' },
-    { from: /^source\/(yojimbo\w*)\.cpp$/, cs: 'cs/source/$1.cs', ts: 'ts/source/$1.ts' },
-    { from: /^source\/yojimbo_address_conversion\.h$/, cs: 'cs/source/yojimbo_address.cs', ts: 'ts/source/yojimbo_client.ts', note: 'the conversion helpers live in these files' },
-    { from: /^(netcode|reliable)\/\1\.[ch]$/, cs: 'cs/$1/$1.cs', ts: 'ts/$1/$1.ts' },
-    { from: /^serialize\/serialize\.h$/, cs: 'cs/serialize/serialize.cs', ts: 'ts/serialize/serialize.ts' },
-    { from: /^sodium\/sodium\.[ch]$/, cs: null, ts: 'ts/sodium/sodium.ts', note: 'C# uses BouncyCastle' },
-    { from: /^fuzz\/(fuzz_\w+)\.(c|cpp|h)$/, cs: 'cs/fuzz/$1.cs', ts: null, note: 'TypeScript has no fuzz port' },
-    { from: /^(test|client|server|soak|loopback|custom_packet_io_test)\.cpp$/, cs: 'cs/$1.cs', ts: 'ts/$1.ts' },
-    { from: /^shared\.h$/, cs: 'cs/shared.cs', ts: 'ts/shared.ts' },
-    { from: /^tlsf\//, cs: 'cs/source/yojimbo_allocator.cs', ts: 'ts/source/yojimbo_allocator.ts', note: 'the TLSF heap is emulated as a byte budget; check its overheads still match' },
-    { from: /^fuzz\/corpus\//, note: 'fuzz corpus: cs/fuzz replays it straight from cpp/, so rerun `fuzz`' },
+    { from: /^include\/(yojimbo\w*)\.h$/, ifUpstream: 'source/$1.cpp', cs: 'cs/source/$1.cs', ts: 'ts/source/$1.ts', rs: 'rust/source/$1.rs' },
+    { from: /^include\/(yojimbo\w*)\.h$/, cs: 'cs/include/$1.cs', ts: 'ts/include/$1.ts', rs: 'rust/include/$1.rs' },
+    { from: /^source\/(yojimbo\w*)\.cpp$/, cs: 'cs/source/$1.cs', ts: 'ts/source/$1.ts', rs: 'rust/source/$1.rs' },
+    { from: /^source\/yojimbo_address_conversion\.h$/, cs: 'cs/source/yojimbo_address.cs', ts: 'ts/source/yojimbo_client.ts', rs: 'rust/source/yojimbo_address.rs', note: 'the conversion helpers live in these files' },
+    { from: /^(netcode|reliable)\/\1\.[ch]$/, cs: 'cs/$1/$1.cs', ts: 'ts/$1/$1.ts', rs: 'rust/$1/$1.rs' },
+    { from: /^serialize\/serialize\.h$/, cs: 'cs/serialize/serialize.cs', ts: 'ts/serialize/serialize.ts', rs: 'rust/serialize/serialize.rs' },
+    { from: /^sodium\/sodium\.[ch]$/, cs: null, ts: 'ts/sodium/sodium.ts', rs: 'rust/sodium/sodium.rs', note: 'C# uses BouncyCastle' },
+    { from: /^fuzz\/(fuzz_\w+)\.(c|cpp|h)$/, cs: 'cs/fuzz/$1.cs', ts: null, rs: 'rust/fuzz/$1.rs', note: 'TypeScript has no fuzz port' },
+    { from: /^(test|client|server|soak|loopback|custom_packet_io_test)\.cpp$/, cs: 'cs/$1.cs', ts: 'ts/$1.ts', rs: 'rust/$1.rs' },
+    { from: /^shared\.h$/, cs: 'cs/shared.cs', ts: 'ts/shared.ts', rs: 'rust/shared.rs' },
+    // Rust ports the TLSF allocator itself; C# and TypeScript emulate it inside their allocator file
+    { from: /^tlsf\//, cs: { file: 'cs/source/yojimbo_allocator.cs', note: TLSF_EMULATED }, ts: { file: 'ts/source/yojimbo_allocator.ts', note: TLSF_EMULATED }, rs: 'rust/tlsf/tlsf.rs' },
+    { from: /^fuzz\/corpus\//, note: 'fuzz corpus: cs/fuzz and rust/fuzz replay it straight from cpp/, so rerun `fuzz`' },
     { from: /^(fuzz\/dict\/|fuzz\/README\.md$)/, note: 'libFuzzer support files' },
     { from: /^test_layout_\w+\.cpp$/, note: 'C++ ABI layout check' },
     { from: /^(STANDARD|STATE-MACHINE)\.md$/, note: 'protocol spec: read for behaviour changes' },
@@ -57,6 +71,14 @@ const MAP = [
     { from: /^(matcher|tools)\//, note: 'upstream tooling, not ported' },
 ];
 
+// a ported rule names every port, so adding a port means deciding its counterpart in every rule
+for ( const rule of MAP )
+{
+    const missing = PORTS.filter( ( port ) => rule[port.id] === undefined );
+    if ( missing.length > 0 && missing.length < PORTS.length )
+        throw new Error( `MAP rule ${rule.from} has no entry for ${missing.map( ( port ) => port.id ).join( ', ' )}` );
+}
+
 function mapFile( file, upstreamFiles )
 {
     for ( const rule of MAP )
@@ -64,11 +86,25 @@ function mapFile( file, upstreamFiles )
         const match = rule.from.exec( file );
         if ( !match )
             continue;
-        const fill = ( template ) => template && template.replace( /\$(\d)/g, ( _, i ) => match[+i] );
+        const fill = ( template ) => template.replace( /\$(\d)/g, ( _, i ) => match[+i] );
         if ( rule.ifUpstream && !upstreamFiles.has( fill( rule.ifUpstream ) ) )
             continue;
-        // a note on a ported file explains the mapping, or why one port has no counterpart
-        return { cs: fill( rule.cs ), ts: fill( rule.ts ), note: rule.note, ported: rule.cs !== undefined, partial: rule.cs === null || rule.ts === null };
+        if ( rule[PORTS[0].id] === undefined )
+            return { ported: false, note: rule.note };
+        // a note on a ported file explains the mapping, or why a port has no counterpart
+        const partial = PORTS.some( ( port ) => rule[port.id] === null );
+        const targets = {};
+        for ( const { id } of PORTS )
+        {
+            const value = rule[id];
+            if ( value === null )
+                targets[id] = { file: null, note: rule.note };
+            else if ( typeof value === 'string' )
+                targets[id] = { file: fill( value ), note: partial ? undefined : rule.note };
+            else
+                targets[id] = { file: fill( value.file ), note: value.note };
+        }
+        return { ported: true, targets };
     }
     return null;
 }
@@ -217,7 +253,7 @@ function report( options )
         statuses.set( file, status[0] );
     }
 
-    const ports = { cs: new Map(), ts: new Map() };     // port file -> [ upstream files ]
+    const ports = Object.fromEntries( PORTS.map( ( port ) => [ port.id, new Map() ] ) );     // port file -> { sources, note }
     const notPorted = [];                                // a port with no counterpart for a ported file
     const informational = new Map();                     // note -> [ upstream files ]
     const unmapped = [];
@@ -236,26 +272,26 @@ function report( options )
         }
         else
         {
-            for ( const port of [ 'cs', 'ts' ] )
+            for ( const { id: port } of PORTS )
             {
-                if ( mapped[port] === null )
+                const target = mapped.targets[port];
+                if ( target.file === null )
                 {
-                    notPorted.push( { ...entry, port, note: mapped.note } );
+                    notPorted.push( { ...entry, port, note: target.note } );
                     continue;
                 }
-                if ( !ports[port].has( mapped[port] ) )
-                    ports[port].set( mapped[port], { sources: [], note: mapped.partial ? undefined : mapped.note } );
-                ports[port].get( mapped[port] ).sources.push( entry );
+                if ( !ports[port].has( target.file ) )
+                    ports[port].set( target.file, { sources: [], note: target.note } );
+                ports[port].get( target.file ).sources.push( entry );
             }
         }
     }
 
     const list = ( entries ) => entries.slice( 0, LIST_LIMIT ).map( describe ).join( ', ' ) + ( entries.length > LIST_LIMIT ? `, and ${entries.length - LIST_LIMIT} more` : '' );
     const describe = ( e ) => `${quote( e.file )} (${e.status === 'A' ? 'new, ' : e.status === 'D' ? 'deleted, ' : ''}${e.stat ? stat( e.stat ) : 'mode'})`;
-    const titles = { cs: 'C# (`cs/`)', ts: 'TypeScript (`ts/`)' };
-    for ( const port of [ 'cs', 'ts' ] )
+    for ( const { id: port, title } of PORTS )
     {
-        out( `## ${titles[port]}` );
+        out( `## ${title}` );
         out();
         if ( ports[port].size === 0 )
             out( 'Nothing to port.' );
@@ -297,7 +333,7 @@ function report( options )
     const syncing = [
         '## Syncing',
         '',
-        `Port each checked file side by side with its upstream diff (\`git -C cpp diff ${short( diffBase )} ${short( to )} -- <file>\`), then move the \`cpp\` pin to \`${short( to )}\` and run the C# tests, the TypeScript tests and \`interop/run.sh\`. See "Tracking upstream" in README.md.`,
+        `Port each checked file side by side with its upstream diff (\`git -C cpp diff ${short( diffBase )} ${short( to )} -- <file>\`), then move the \`cpp\` pin to \`${short( to )}\` and run the C#, TypeScript and Rust tests and \`interop/run.sh\`. See "Tracking upstream" in README.md.`,
     ];
 
     // the commits go last and get whatever room the report has left, newest last

@@ -3,8 +3,8 @@
     Package versions for the ports.
 
     The ports mirror the upstream yojimbo version they implement (cpp/include/yojimbo_config.h), plus a port
-    revision for fixes made here between upstream releases. Both packages (NuGet yojimbo, npm yojimbo2) use one
-    version that folds the revision into the patch: MAJOR.MINOR.(PATCH * 100 + REVISION).
+    revision for fixes made here between upstream releases. All the packages (NuGet yojimbo, npm yojimbo2, crates.io
+    yojimbo) use one version that folds the revision into the patch: MAJOR.MINOR.(PATCH * 100 + REVISION).
 
         1.13.500    the port of upstream 1.13.5
         1.13.501    the first port-only fix on top of it
@@ -13,8 +13,10 @@
     VERSION at the repo root holds it; release tags are v<VERSION>.
 
         node tools/version.mjs                     print the version and the upstream version it ports
-        node tools/version.mjs check [tag]         verify VERSION, cs/yojimbo.csproj, ts/package.json (and a v<VERSION> tag)
-        node tools/version.mjs set 1.13.501        write VERSION, cs/yojimbo.csproj, ts/package.json and its lockfile
+        node tools/version.mjs check [tag]         verify VERSION, cs/yojimbo.csproj, ts/package.json, rust/Cargo.toml
+                                                   and rust/Cargo.lock if present (and a v<VERSION> tag)
+        node tools/version.mjs set 1.13.501        write VERSION, cs/yojimbo.csproj, ts/package.json and its lockfile,
+                                                   rust/Cargo.toml and the yojimbo entry of each Cargo.lock present
         node tools/version.mjs set 1.13.5.1        the same, given as upstream version plus revision
 */
 
@@ -70,6 +72,22 @@ function readCsproj()
 
 const readPackageJson = () => JSON.parse( fs.readFileSync( file( 'ts/package.json' ), 'utf8' ) ).version;
 
+// the version key of Cargo.toml's [package] table (no '[' between the table header and the key)
+const CARGO_TOML_VERSION = /(^\[package\][^[]*?^version\s*=\s*")([^"]*)(")/m;
+// the yojimbo entry of a Cargo.lock: the crate itself in rust/, the path dependency in interop/rust/
+const CARGO_LOCK_VERSION = /(^\[\[package\]\]\r?\nname = "yojimbo"\r?\nversion = ")([^"]*)(")/m;
+const CARGO_LOCKS = [ 'rust/Cargo.lock', 'interop/rust/Cargo.lock' ];
+
+function readCargo( name, pattern )
+{
+    const match = pattern.exec( fs.readFileSync( file( name ), 'utf8' ) );
+    if ( !match )
+        throw new Error( `no yojimbo package version in ${name}` );
+    return match[2];
+}
+
+const readCargoToml = () => readCargo( 'rust/Cargo.toml', CARGO_TOML_VERSION );
+
 function check( tag )
 {
     const problems = [];
@@ -84,6 +102,10 @@ function check( tag )
         problems.push( `cs/yojimbo.csproj has ${readCsproj()}, expected ${packageOf( v )}` );
     if ( readPackageJson() !== packageOf( v ) )
         problems.push( `ts/package.json has ${readPackageJson()}, expected ${packageOf( v )}` );
+    if ( readCargoToml() !== packageOf( v ) )
+        problems.push( `rust/Cargo.toml has ${readCargoToml()}, expected ${packageOf( v )}` );
+    if ( fs.existsSync( file( 'rust/Cargo.lock' ) ) && readCargo( 'rust/Cargo.lock', CARGO_LOCK_VERSION ) !== packageOf( v ) )
+        problems.push( `rust/Cargo.lock has ${readCargo( 'rust/Cargo.lock', CARGO_LOCK_VERSION )}, expected ${packageOf( v )}` );
     if ( tag !== undefined && tag.replace( /^refs\/tags\//, '' ) !== `v${packageOf( v )}` )
         problems.push( `tag ${tag} does not match VERSION (expected v${packageOf( v )})` );
     for ( const problem of problems )
@@ -97,6 +119,7 @@ function set( version )
 {
     const v = parse( version );
     const packageVersion = packageOf( v );
+    readCargoToml();        // fails before anything is written when rust/Cargo.toml has no [package] version
     fs.writeFileSync( file( 'VERSION' ), packageVersion + '\n' );
 
     const csproj = fs.readFileSync( file( 'cs/yojimbo.csproj' ), 'utf8' );
@@ -111,6 +134,14 @@ function set( version )
         if ( json.packages?.[''] )
             json.packages[''].version = packageVersion;
         fs.writeFileSync( file( name ), JSON.stringify( json, null, 2 ) + '\n' );
+    }
+
+    for ( const [ name, pattern ] of [ [ 'rust/Cargo.toml', CARGO_TOML_VERSION ], ...CARGO_LOCKS.map( ( lock ) => [ lock, CARGO_LOCK_VERSION ] ) ] )
+    {
+        if ( name !== 'rust/Cargo.toml' && !fs.existsSync( file( name ) ) )
+            continue;
+        readCargo( name, pattern );         // throws when the version is missing, rather than writing the file unchanged
+        fs.writeFileSync( file( name ), fs.readFileSync( file( name ), 'utf8' ).replace( pattern, `$1${packageVersion}$3` ) );
     }
     console.log( `set: ${packageVersion} (upstream ${upstreamOf( v )}, port revision ${v.revision})` );
 }

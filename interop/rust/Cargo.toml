@@ -1,0 +1,31 @@
+# Cross-implementation interop test (Rust side), built and run by interop/run.sh:
+#   cargo run --release --manifest-path interop/rust/Cargo.toml -- server [port]
+# Like interop/cs/interop.csproj, it builds against the port's library and its shared.h port (rust/shared.rs,
+# which interop.rs includes with #[path]).
+
+[package]
+name = "interop"
+version = "0.0.0"
+edition = "2021"
+publish = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+
+# its own workspace root, so cargo never looks for one above interop/
+[workspace]
+
+[dependencies]
+yojimbo = { path = "../../rust" }
+
+[[bin]]
+name = "interop"
+path = "interop.rs"
+
+# port: as rust/Cargo.toml. Profiles come from the root package, so they also apply to the yojimbo dependency here.
+[profile.dev]
+overflow-checks = false
+
+[profile.release]
+overflow-checks = false

@@ -1,0 +1,86 @@
+# Rust port: build, unit tests, fuzz corpus regression, crate package check, and interop against the upstream C++
+# build and the C# and TypeScript ports.
+#
+# The tests bind fixed UDP ports (40000, 30000, ...), so each job runs its suites one after another.
+# Jobs run on separate runners, so they can't collide with each other.
+
+name: rust
+
+on:
+  push:
+    branches: [ master ]
+    paths: [ 'rust/**', 'interop/**', 'cpp', '.gitmodules', '.github/workflows/rust.yml' ]
+  pull_request:
+    paths: [ 'rust/**', 'interop/**', 'cpp', '.gitmodules', '.github/workflows/rust.yml' ]
+  workflow_dispatch:
+
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+
+  test:
+    name: test (${{ matrix.os }}, ${{ matrix.profile }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, macos-latest, windows-latest ]
+        profile: [ debug, release ]
+        include:
+          - profile: debug
+            flags: ''
+          - profile: release
+            flags: '--release'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true          # the fuzz corpus lives in cpp/fuzz/corpus
+      - name: toolchain
+        run: rustup update stable --no-self-update && rustup default stable
+      - name: build
+        run: cargo build ${{ matrix.flags }} --manifest-path rust/Cargo.toml
+      - name: test
+        run: cargo run ${{ matrix.flags }} --manifest-path rust/Cargo.toml --bin test
+      - name: custom_packet_io_test
+        run: cargo run ${{ matrix.flags }} --manifest-path rust/Cargo.toml --bin custom_packet_io_test
+      - name: fuzz corpus regression
+        run: cargo run ${{ matrix.flags }} --manifest-path rust/Cargo.toml --bin fuzz
+      - name: upload fuzz crash inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes-rust-${{ matrix.os }}-${{ matrix.profile }}
+          path: crash-*
+          if-no-files-found: ignore
+      - name: package
+        if: matrix.profile == 'release'
+        run: cargo package --manifest-path rust/Cargo.toml
+
+  interop:
+    name: interop (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, macos-latest ]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true          # interop builds the upstream C++ in cpp/
+      - name: toolchain
+        run: rustup update stable --no-self-update && rustup default stable
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'        # the TypeScript side runs its .ts sources directly
+      - name: interop
+        run: interop/run.sh

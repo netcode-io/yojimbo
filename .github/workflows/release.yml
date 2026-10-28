@@ -1,14 +1,16 @@
-# Release: publish the C# port to NuGet (yojimbo) and the TypeScript port to npm (yojimbo2).
+# Release: publish the C# port to NuGet (yojimbo), the TypeScript port to npm (yojimbo2) and the Rust port to
+# crates.io (yojimbo).
 #
 # Push a tag v<VERSION>, where VERSION is the root VERSION file (e.g. v1.13.500 for upstream 1.13.5, v1.13.501 for a
-# port-only fix on top of it; both packages publish that same version).
-# tools/version.mjs checks the tag against VERSION, cs/yojimbo.csproj, ts/package.json and the upstream version
-# in cpp/. Run it by hand (Actions > release > Run workflow) for a dry run that builds, tests and packs but
-# publishes nothing, or tick "publish" and pick targets to publish the current VERSION to npm and/or NuGet only
-# (no tag, no GitHub release):  gh workflow run release.yml -f publish=true -f targets=npm
+# port-only fix on top of it; every package publishes that same version).
+# tools/version.mjs checks the tag against VERSION, cs/yojimbo.csproj, ts/package.json, rust/Cargo.toml and the
+# upstream version in cpp/. Run it by hand (Actions > release > Run workflow) for a dry run that builds, tests and
+# packs but publishes nothing, or tick "publish" and pick targets to publish the current VERSION to all three
+# registries or to one alone (no tag, no GitHub release):  gh workflow run release.yml -f publish=true -f targets=npm
 #
 # Secrets: NUGET_API_KEY (nuget.org API key with push rights for "yojimbo"), NPM_TOKEN (npm automation or granular
-# token with publish rights for "yojimbo2").
+# token with publish rights for "yojimbo2"), CARGO_REGISTRY_TOKEN (crates.io API token with the publish-update
+# scope for "yojimbo"; publish-new for the first release).
 
 name: release
 
@@ -18,14 +20,14 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: 'Publish to NuGet and npm (unchecked = dry run)'
+        description: 'Publish to NuGet, npm and crates.io (unchecked = dry run)'
         type: boolean
         default: false
       targets:
         description: 'What to publish'
         type: choice
-        options: [ both, npm, nuget ]
-        default: both
+        options: [ all, npm, nuget, crates ]
+        default: all
 
 permissions:
   contents: write        # create the GitHub release
@@ -37,7 +39,8 @@ concurrency:
 
 env:
   PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
-  TARGETS: ${{ github.event_name == 'push' && 'both' || inputs.targets }}
+  TARGETS: ${{ github.event_name == 'push' && 'all' || inputs.targets }}
+  CARGO_TERM_COLOR: always
 
 jobs:
 
@@ -57,6 +60,8 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           cache: npm
           cache-dependency-path: ts/package-lock.json
+      - name: rust toolchain
+        run: rustup update stable --no-self-update && rustup default stable
 
       - name: check versions
         run: |
@@ -86,6 +91,12 @@ jobs:
           npm run build
           npm run test:bundle
           npm run test:declarations
+      - name: test (Rust)
+        run: |
+          cargo build --release --manifest-path rust/Cargo.toml
+          cargo run --release --manifest-path rust/Cargo.toml --bin test
+          cargo run --release --manifest-path rust/Cargo.toml --bin custom_packet_io_test
+          cargo run --release --manifest-path rust/Cargo.toml --bin fuzz
       - name: interop
         run: interop/run.sh
 
@@ -94,21 +105,31 @@ jobs:
           mkdir -p artifacts
           dotnet pack cs/yojimbo.csproj -c Release -o artifacts
           (cd ts && npm pack --pack-destination ../artifacts)
+          cargo package --manifest-path rust/Cargo.toml
+          cp "rust/target/package/yojimbo-$(cat VERSION).crate" artifacts/
           ls -l artifacts
 
       - name: publish to NuGet
-        if: env.PUBLISH == 'true' && env.TARGETS != 'npm'
+        if: env.PUBLISH == 'true' && (env.TARGETS == 'all' || env.TARGETS == 'nuget')
         run: dotnet nuget push "artifacts/*.nupkg" --api-key "${{ secrets.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate
       - name: publish to npm
-        if: env.PUBLISH == 'true' && env.TARGETS != 'nuget'
+        if: env.PUBLISH == 'true' && (env.TARGETS == 'all' || env.TARGETS == 'npm')
         working-directory: ts
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --provenance --access public
       - name: dry run (npm)
-        if: env.PUBLISH != 'true' || env.TARGETS == 'nuget'
+        if: env.PUBLISH != 'true' || (env.TARGETS != 'all' && env.TARGETS != 'npm')
         working-directory: ts
         run: npm publish --dry-run
+      - name: publish to crates.io
+        if: env.PUBLISH == 'true' && (env.TARGETS == 'all' || env.TARGETS == 'crates')
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --manifest-path rust/Cargo.toml
+      - name: dry run (crates.io)
+        if: env.PUBLISH != 'true' || (env.TARGETS != 'all' && env.TARGETS != 'crates')
+        run: cargo publish --dry-run --manifest-path rust/Cargo.toml
 
       - name: GitHub release
         if: github.event_name == 'push'

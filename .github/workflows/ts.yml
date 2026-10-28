@@ -2,7 +2,7 @@
 # test, and (job browser) a yojimbo server hosted in a headless Chromium page.
 #
 # The tests bind fixed UDP ports (40000, 30000, ...), so each job runs its suites one after another.
-# Interop against C++ and C# runs in cs.yml.
+# Interop against C++, C# and Rust runs in cs.yml and rust.yml.
 
 name: ts
 

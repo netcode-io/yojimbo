@@ -1,6 +1,6 @@
 # Integrating yojimbo
 
-How to use the C# and TypeScript ports of yojimbo in a game or service. The examples below were built and run against this repository. Run them as written and change them from there.
+How to use the C#, TypeScript and Rust ports of yojimbo in a game or service. The examples below were built and run against this repository. Run them as written and change them from there.
 
 ## Pick a port
 
@@ -9,17 +9,24 @@ How to use the C# and TypeScript ports of yojimbo in a game or service. The exam
 | a .NET game client or dedicated server (.NET 10, Godot C#, Unity and anything else that takes .NET Standard 2.1) | `cs/`, the `yojimbo` NuGet package (`net10.0` and `netstandard2.1`) |
 | a Node game server, tools or bots | `ts/` on Node 24+ (native UDP), the `yojimbo2` npm package |
 | a browser client | `yojimbo2` in the browser, over WebRTC to a server running `yojimbo2/webrtc/server` (on Node, or in another browser page) |
+| a Rust game client or dedicated server, tools or bots | `rust/`, the `yojimbo` crate (std only, no dependencies; Rust 1.80+) |
 
-All three implementations interoperate: C++, C# and TypeScript speak the same wire protocol (`NETCODE 1.02`), so any client can connect to any server. `interop/run.sh` checks all nine pairings. A mixed deployment works as long as both sides agree on the things listed in [What both ends must agree on](#what-both-ends-must-agree-on).
+All four implementations interoperate: C++, C#, TypeScript and Rust speak the same wire protocol (`NETCODE 1.02`), so any client can connect to any server. `interop/run.sh` checks all sixteen pairings. A mixed deployment works as long as both sides agree on the things listed in [What both ends must agree on](#what-both-ends-must-agree-on).
 
 Install:
 
 - **C#:** `dotnet add package yojimbo`, then `using networkprotocol; using static networkprotocol.yojimbo;`. Or reference the source: `<ProjectReference Include="path/to/cs/yojimbo.csproj" />`.
 - **TypeScript:** `npm install yojimbo2`, then `import { ... } from 'yojimbo2'`. Plain `yojimbo` is a different package on npm. Subpaths: `yojimbo2/webrtc/client`, `yojimbo2/webrtc/server`, `yojimbo2/webrtc/server-http` (Node), `yojimbo2/webrtc/token`, `yojimbo2/netcode`, `yojimbo2/reliable`, `yojimbo2/serialize`, `yojimbo2/sodium`. The package is ES modules with type definitions and works with Node 24+ and with browser bundlers. TypeScript consumers need TypeScript 5.0 or later; the declarations are checked against 5.0 and the latest release. To work from the source instead, import `path/to/ts/source/yojimbo.ts`: Node 24 runs the `.ts` files directly.
+- **Rust:** `cargo add yojimbo` (or `yojimbo = "1.13"` under `[dependencies]`), then `use yojimbo::*;`, which brings in the yojimbo API and its macros. The libraries underneath are modules: `yojimbo::netcode`, `yojimbo::reliable`, `yojimbo::serialize`, `yojimbo::sodium`, `yojimbo::tlsf`. Or depend on the source: `yojimbo = { path = "path/to/rust" }`. A dependency is built with your package's profiles, not its own, so copy the crate's one debug setting into your `Cargo.toml`. It turns overflow checks off, a safety net for the wrapping C arithmetic the port follows (release builds have them off already):
 
-Both packages share one version, which follows upstream yojimbo with the port's revision folded into the patch. `1.13.500` is the port of upstream 1.13.5, `1.13.501` is the first port-only fix on top of it, and `1.13.600` is the port of upstream 1.13.6.
+  ```toml
+  [profile.dev.package.yojimbo]
+  overflow-checks = false
+  ```
 
-The examples below use the packages. To build against the repository sources instead, import from `path/to/ts/source/yojimbo.ts` and `path/to/ts/webrtc/*.ts` (TypeScript); the C# code is the same either way.
+All three packages share one version, which follows upstream yojimbo with the port's revision folded into the patch. `1.13.500` is the port of upstream 1.13.5, `1.13.501` is the first port-only fix on top of it, and `1.13.600` is the port of upstream 1.13.6.
+
+The examples below use the packages. To build against the repository sources instead, import from `path/to/ts/source/yojimbo.ts` and `path/to/ts/webrtc/*.ts` (TypeScript); the C# and Rust code is the same either way.
 
 ## The model
 
@@ -28,7 +35,7 @@ The examples below use the packages. To build against the repository sources ins
   - The backend issues a token (client id, server addresses, expiry), encrypted with that key.
   - The client passes the token to `Connect`.
   - Tokens are single use, and they expire.
-- **Messages** are classes you define, with one `Serialize` method used for writing, reading and measuring. They travel on **channels**:
+- **Messages** are classes (structs in Rust) you define, with one `Serialize` method used for writing, reading and measuring. They travel on **channels**:
   - **reliable-ordered:** resent until acked, delivered in order;
   - **unreliable-unordered:** sent once, may be lost or reordered.
 
@@ -225,7 +232,7 @@ The client mirrors the C# client: `new Client( ... )`, `client.Connect( clientId
 
 ## Browser clients (WebRTC)
 
-Browsers can't send UDP, so browser clients reach the server over WebRTC data channels configured to behave like UDP (unordered, no retransmits). The channels carry the same encrypted netcode packets. A Node server accepts WebRTC peers and native UDP clients (Node, C#, C++) at the same time; a server can also run in a browser page (WebRTC only, see below).
+Browsers can't send UDP, so browser clients reach the server over WebRTC data channels configured to behave like UDP (unordered, no retransmits). The channels carry the same encrypted netcode packets. A Node server accepts WebRTC peers and native UDP clients (Node, C#, Rust, C++) at the same time; a server can also run in a browser page (WebRTC only, see below).
 
 **Server (Node, needs `npm install node-datachannel`):**
 
@@ -327,6 +334,216 @@ What to know:
 - **Background tabs throttle timers,** so a hidden tab's loop runs slowly. Expect timeouts if the tab stays hidden longer than `config.timeout`.
 - **Demo and docs:** see `ts/README.md` and `ts/webrtc/demo/` for a working page and server (`npm run demo:webrtc`).
 
+## Rust
+
+The Rust port keeps upstream's names and its object model: a C++ class with virtual methods is a trait, and the objects the library hands you are raw pointers, created and released through the client or server as in C++.
+
+```rust
+#![allow(non_snake_case)]                                   // the API keeps upstream's names (playerId, clientIndex)
+
+use yojimbo::*;
+
+// 1. a message: Serialize runs for write, read and measure. each serialize_* macro returns false on failure
+pub struct ChatMessage
+{
+    pub base: MessageBase,                                  // every message embeds MessageBase as `base`
+    pub playerId: i32,
+    pub text: [u8; 256],                                    // NUL-terminated, as upstream's char[256]
+}
+
+impl Default for ChatMessage                                // the factory creates messages with Default::default()
+{
+    fn default() -> ChatMessage { ChatMessage { base: MessageBase::default(), playerId: 0, text: [0; 256] } }
+}
+
+impl ChatMessage
+{
+    pub fn Serialize<S: Stream>( &mut self, stream: &mut S ) -> bool
+    {
+        serialize_int!( stream, self.playerId, 0, 63 );
+        serialize_string!( stream, self.text, 256 );
+        true
+    }
+}
+
+impl Serializable for ChatMessage { YOJIMBO_VIRTUAL_SERIALIZE_FUNCTIONS!(); }  // read, write and measure call Serialize
+YOJIMBO_MESSAGE!( ChatMessage );                            // implements Message through `base`
+
+pub const CHAT_MESSAGE: i32 = 0;
+pub const NUM_GAME_MESSAGE_TYPES: i32 = 1;
+
+// 2. the factory maps type ids to structs, in the same order on every peer
+YOJIMBO_MESSAGE_FACTORY!( GameMessageFactory, NUM_GAME_MESSAGE_TYPES, {
+    CHAT_MESSAGE => ChatMessage,
+} );
+
+// 3. the adapter creates the factory and hears about server connects/disconnects
+pub struct GameAdapter;
+
+impl Adapter for GameAdapter
+{
+    fn CreateMessageFactory( &mut self, allocator: *mut dyn Allocator ) -> *mut dyn MessageFactory
+    {
+        YOJIMBO_NEW!( allocator, GameMessageFactory, GameMessageFactory::new( allocator ) ) as *mut dyn MessageFactory
+    }
+
+    fn OnServerClientConnected( &mut self, _clientIndex: i32 ) { }
+    fn OnServerClientDisconnected( &mut self, _clientIndex: i32 ) { }
+}
+
+pub fn CreateConfig() -> ClientServerConfig
+{
+    let mut config = ClientServerConfig::new();
+    config.protocolId = 0x1122334455667788;                 // must match on client and server
+    config.numChannels = 2;
+    config.channel[0].r#type = CHANNEL_TYPE_RELIABLE_ORDERED;   // `type` is a keyword, so the field is r#type
+    config.channel[1].r#type = CHANNEL_TYPE_UNRELIABLE_UNORDERED;
+    config
+}
+```
+
+Server:
+
+```rust
+InitializeYojimbo();                                        // once per process; ShutdownYojimbo() at exit
+
+let mut adapter = GameAdapter;                              // the server keeps a pointer to it: it must outlive the server and not move
+let mut server = Server::new( GetDefaultAllocator(), &privateKey, &Address::from_string_port( "203.0.113.10", 40000 ), &CreateConfig(), &mut adapter, yojimbo_time() );
+if !server.Start( MaxClients ) { panic!( "server failed to start" ); }
+
+while running
+{
+    server.SendPackets();
+    server.ReceivePackets();
+    server.AdvanceTime( yojimbo_time() );
+
+    for clientIndex in 0..MaxClients
+    {
+        if !server.IsClientConnected( clientIndex ) { continue; }
+        loop
+        {
+            let message = server.ReceiveMessage( clientIndex, 0 );  // *mut dyn Message, null when there are no more
+            if message.is_null() { break; }
+            if unsafe { ( *message ).GetType() } == CHAT_MESSAGE
+            {
+                let chat = unsafe { message_cast::<ChatMessage>( message ) };   // the C++ cast: check GetType() first
+                let text = std::ffi::CStr::from_bytes_until_nul( &chat.text ).unwrap_or_default();
+                println!( "client {} says {:?}", chat.playerId, text );
+            }
+            server.ReleaseMessage( clientIndex, message );  // always release what you receive
+        }
+    }
+    yojimbo_sleep( 1.0 / 60.0 );
+}
+
+server.Stop();                                              // before the server drops, and before ShutdownYojimbo()
+ShutdownYojimbo();
+```
+
+Client:
+
+```rust
+let mut adapter = GameAdapter;                              // as on the server: outlives the client, doesn't move
+let mut client = Client::new( GetDefaultAllocator(), &Address::from_string( "0.0.0.0" ), &CreateConfig(), &mut adapter, yojimbo_time() );
+client.Connect( clientId, &connectToken );                  // token from your backend (see Connect tokens)
+
+while !client.IsDisconnected()
+{
+    client.SendPackets();
+    client.ReceivePackets();
+    client.AdvanceTime( yojimbo_time() );
+    if client.ConnectionFailed() { break; }                 // GetDisconnectReason() says why
+
+    if client.IsConnected() && client.CanSendMessage( 0 )
+    {
+        let message = client.CreateMessage( CHAT_MESSAGE ); // *mut dyn Message
+        let chat = unsafe { message_cast::<ChatMessage>( message ) };
+        chat.playerId = client.GetClientIndex();
+        chat.text[..5].copy_from_slice( b"hello" );
+        client.SendMessage( 0, message );                   // the library owns it now
+    }
+    yojimbo_sleep( 1.0 / 60.0 );
+}
+client.Disconnect();                                        // before the client drops, and before ShutdownYojimbo()
+```
+
+The client receives as the server does: `client.ReceiveMessage( 0 )` until it returns null, and `client.ReleaseMessage( message )` for each one.
+
+**Blocks.** A block message embeds `BlockMessage` instead of `MessageBase` and uses `YOJIMBO_BLOCK_MESSAGE!`. This factory uses the other spelling of the factory macro, upstream's three macros as one invocation:
+
+```rust
+#[derive(Default)]
+pub struct SnapshotMessage
+{
+    pub base: BlockMessage,                                 // a block message embeds BlockMessage as `base`
+    pub tick: u32,
+}
+
+impl SnapshotMessage
+{
+    pub fn Serialize<S: Stream>( &mut self, stream: &mut S ) -> bool
+    {
+        serialize_bits!( stream, self.tick, 32 );           // the block itself is serialized for you
+        true
+    }
+}
+
+impl Serializable for SnapshotMessage { YOJIMBO_VIRTUAL_SERIALIZE_FUNCTIONS!(); }
+YOJIMBO_BLOCK_MESSAGE!( SnapshotMessage );
+
+pub const CHAT_MESSAGE: i32 = 0;
+pub const SNAPSHOT_MESSAGE: i32 = 1;
+pub const NUM_GAME_MESSAGE_TYPES: i32 = 2;
+
+YOJIMBO_MESSAGE_FACTORY_START!( GameMessageFactory, NUM_GAME_MESSAGE_TYPES,
+    YOJIMBO_DECLARE_MESSAGE_TYPE( CHAT_MESSAGE, ChatMessage );
+    YOJIMBO_DECLARE_MESSAGE_TYPE( SNAPSHOT_MESSAGE, SnapshotMessage );
+YOJIMBO_MESSAGE_FACTORY_FINISH() );
+```
+
+Send a block from a byte buffer, and read it back on the other side:
+
+```rust
+let message = client.CreateMessage( SNAPSHOT_MESSAGE );
+unsafe { message_cast::<SnapshotMessage>( message ) }.tick = tick;
+let block = client.AllocateBlock( snapshot.len() as i32 );      // *mut u8 from the client's allocator, null if it is out of memory
+unsafe { std::ptr::copy_nonoverlapping( snapshot.as_ptr(), block, snapshot.len() ); }
+client.AttachBlockToMessage( message, block, snapshot.len() as i32 );   // the message owns the block now
+client.SendMessage( 0, message );
+```
+
+```rust
+if unsafe { ( *message ).GetType() } == SNAPSHOT_MESSAGE
+{
+    let snapshotMessage = unsafe { message_cast::<SnapshotMessage>( message ) };
+    let data = unsafe { std::slice::from_raw_parts( snapshotMessage.base.GetBlockData(), snapshotMessage.base.GetBlockSize() as usize ) };
+    // use data before ReleaseMessage, which frees the block with the message
+}
+```
+
+What to know:
+
+- **`use yojimbo::*;`** brings in everything, macros included. `ClientInterface` and `ServerInterface` are traits, so a client or server method is not found without that import (or `use yojimbo::{ ClientInterface, ServerInterface };`).
+- **Names:** upstream's spelling throughout (`SendPackets`, `numChannels`, `CHANNEL_TYPE_RELIABLE_ORDERED`). C++ enums are `i32` constants. Put `#![allow(non_snake_case)]` at the top of files that use the same style.
+- **`Client::new` and `Server::new` return `Box<Client>` / `Box<Server>`.** netcode and reliable hold raw pointers to the object while it is connected or running, so keep it in that box: moving the `Box` is fine, moving the value out of it is not.
+- **The adapter is a `*mut dyn Adapter`.** Pass `&mut adapter` and it coerces. The client or server keeps the pointer, and the compiler does not check its lifetime, so the adapter must outlive them and not move: declare it before them, or `Box::leak` it. An adapter that needs the server (to call `GetClientDisconnectReason` from `OnServerClientDisconnected`, say) holds a `*mut Server` set after `Server::new`, as `rust/server.rs` does. Custom packet I/O is the adapter's `UseCustomPacketIO`, `SendPacket` and `ReceivePacket` (see `rust/custom_packet_io_test.rs`).
+- **Messages are `*mut dyn Message`.** Create them through the client or server (`CreateMessage`), so the factory and its allocator own them. `message_cast::<T>( message )` turns one into your struct, as the C++ cast does. Release each one you receive with `ReleaseMessage`. The compiler doesn't stop you using a `message_cast` reference after `SendMessage` or `ReleaseMessage`, so the ownership rules under [Pitfalls](#pitfalls) are yours to keep, as in C++. `Message` methods (`GetType`, `GetId`) are called through the pointer: `( *message ).GetType()`.
+- **The message macros:**
+  - `YOJIMBO_MESSAGE!( T )` implements `Message` for a struct with `base: MessageBase`.
+  - `YOJIMBO_BLOCK_MESSAGE!( T )` does the same for one with `base: BlockMessage`.
+  - `YOJIMBO_VIRTUAL_SERIALIZE_FUNCTIONS!()` goes inside `impl Serializable for T`. It routes the read, write and measure streams to your `fn Serialize<S: Stream>`.
+  - `YOJIMBO_MESSAGE_FACTORY!` or `YOJIMBO_MESSAGE_FACTORY_START!` defines the factory struct with `new( allocator )`. Message types are any `i32` expressions.
+  - Every message struct implements `Default`: the factory builds messages with it.
+- **The `serialize_*!` macros** (`serialize_int!`, `serialize_bits!`, `serialize_bool!`, `serialize_float!`, `serialize_string!`, `serialize_bytes!`, ...) work only inside a function that returns `bool`. On failure they `return false` from it, so a failure always propagates. `S::IsWriting` and `S::IsReading` are constants for code that differs by direction.
+- **`unsafe` marks raw pointer use:**
+  - dereferencing a message pointer (`( *message ).GetType()`);
+  - `message_cast`, which trusts that the message really is a `T` (check `GetType()` first; debug builds assert the size);
+  - reading or writing block memory (`AllocateBlock`, `GetBlockData`).
+
+  Building, connecting, pumping and sending need none.
+- **Teardown order:** `Disconnect()` the client and `Stop()` the server before they drop (debug builds assert it) and before `ShutdownYojimbo()`: both free memory back to the default allocator, which `ShutdownYojimbo()` destroys. Dropping the box afterwards, at the end of `main`, is fine.
+- **Debug builds** turn on upstream's checks: asserts, memory and message leak tracking, and the packet budget. A message you never released asserts when its client disconnects or its server stops.
+
 ## Connect tokens
 
 Issue tokens on a trusted backend, never in the client. The backend needs the private key, the protocol id, the client id, and the server addresses the client may use.
@@ -345,6 +562,19 @@ Issue tokens on a trusted backend, never in the client. The backend needs the pr
   ```
 
   `GenerateConnectToken` comes from `yojimbo2/webrtc/token` and also works for UDP servers.
+- **Rust:**
+
+  ```rust
+  use yojimbo::netcode::{ netcode_generate_connect_token, NETCODE_OK };
+
+  let mut connectToken = [0u8; ConnectTokenBytes as usize];
+  let userData = [0u8; 256];
+  if netcode_generate_connect_token( 1, &[ "203.0.113.10:40000" ], &[ "203.0.113.10:40000" ],
+      expireSeconds, YOJIMBO_DEFAULT_TIMEOUT, clientId, protocolId, &privateKey, &userData, &mut connectToken ) != NETCODE_OK
+  {
+      panic!( "failed to generate connect token" );
+  }
+  ```
 - **C++ backends:** use `netcode_generate_connect_token`. Tokens from any implementation work on any server.
 
 Rules the server enforces:
@@ -353,13 +583,13 @@ Rules the server enforces:
 - **Single use:** a token can't be used from a second address.
 - **Server start:** a token issued before the server started is refused. Set `ClientServerConfig.maxConnectTokenLifetime` on the server to the lifetime your backend uses (`expireSeconds`, 30 by default) so this check works.
 
-For local development, `client.InsecureConnect(privateKey, clientId, serverAddress)` makes its own token. Never ship it: the client would need the private key.
+For local development, `client.InsecureConnect(privateKey, clientId, serverAddress)` (Rust: `client.InsecureConnect( &privateKey, clientId, &serverAddress )`) makes its own token. Never ship it: the client would need the private key.
 
 ## What both ends must agree on
 
 - `protocolId` and the private key.
 - The channel layout: `numChannels` and each channel's `type`, plus `maxBlockSize` and `blockFragmentSize` when blocks are used.
-- The message types, the same ids in the same order, and every `Serialize` producing the same bits. The C#/TS/C++ serialize primitives are bit-identical, so the same sequence of `serialize_*` calls with the same ranges interoperates.
+- The message types, the same ids in the same order, and every `Serialize` producing the same bits. The C++, C#, TypeScript and Rust serialize primitives are bit-identical, so the same sequence of `serialize_*` calls with the same ranges interoperates.
 - `maxPacketSize` and the fragment settings, if you change them from the defaults.
 
 ## Pitfalls
@@ -369,7 +599,7 @@ For local development, `client.InsecureConnect(privateKey, clientId, serverAddre
   - Don't touch a message after `SendMessage`.
   - Don't send or release a message twice.
   - Check `CanSendMessage(channel)` before creating a message on a channel. A full send queue is a channel error that disconnects the client.
-- **Serialize:** every `serialize_*` call must have its result checked, and the function must `return false` on failure. Skipping that turns malformed packets into exceptions.
+- **Serialize:** every `serialize_*` call must have its result checked, and the function must `return false` on failure. Skipping that turns malformed packets into exceptions. The Rust `serialize_*!` macros do both for you.
 - **Time:** pass the same monotonic clock (seconds, as a double) to `AdvanceTime` every frame: `yojimbo.time()` or `yojimbo_time()`. Don't use wall-clock time.
 - **Node sockets need the event loop.** UDP and WebRTC packets arrive only while it runs. On Windows, Node reads one datagram per socket per event-loop turn, so a busy server should sleep a real frame each tick, not spin.
 - **Threads:** keep each client or server on one thread or event loop.
@@ -385,4 +615,5 @@ For local development, `client.InsecureConnect(privateKey, clientId, serverAddre
 
 - [README.md](README.md): layout, build and test commands, interop and CI.
 - [ts/README.md](ts/README.md): TypeScript conventions and WebRTC deployment details.
+- [rust/README.md](rust/README.md): Rust conventions (names, pointers and memory, macros).
 - Upstream [USAGE.md](cpp/USAGE.md) and [STATE-MACHINE.md](cpp/STATE-MACHINE.md): the C++ API docs. The ports keep the same names, and they apply here.

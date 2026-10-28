@@ -1,0 +1,60 @@
+[package]
+name = "yojimbo"
+# tracks upstream yojimbo: cpp/ is the submodule this version was ported from (node tools/version.mjs set)
+version = "1.13.502"
+edition = "2021"
+rust-version = "1.80"
+authors = ["Glenn Fiedler", "Sky Morey", "Claude"]
+description = "Rust port of yojimbo, a network library for client/server games with dedicated servers, with netcode and reliable built in. Speaks the netcode 1.02 wire protocol and interoperates with the C/C++ originals."
+license = "BSD-3-Clause"
+repository = "https://github.com/netcode-io/yojimbo"
+homepage = "https://github.com/netcode-io/yojimbo"
+readme = "README.md"
+keywords = ["yojimbo", "netcode", "networking", "udp", "multiplayer"]
+categories = ["network-programming", "game-development"]
+include = ["lib.rs", "include/**/*.rs", "source/**/*.rs", "netcode/**/*.rs", "reliable/**/*.rs", "serialize/**/*.rs", "sodium/**/*.rs", "tlsf/**/*.rs", "README.md", "LICENCE"]
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+
+[lib]
+name = "yojimbo"
+path = "lib.rs"
+
+# the upstream CMake targets
+[[bin]]
+name = "test"
+path = "test.rs"
+
+[[bin]]
+name = "custom_packet_io_test"
+path = "custom_packet_io_test.rs"
+
+[[bin]]
+name = "fuzz"
+path = "fuzz/fuzz_standalone.rs"
+
+[[bin]]
+name = "client"
+path = "client.rs"
+
+[[bin]]
+name = "server"
+path = "server.rs"
+
+[[bin]]
+name = "loopback"
+path = "loopback.rs"
+
+[[bin]]
+name = "soak"
+path = "soak.rs"
+
+# port: C unsigned arithmetic wraps; the code uses wrapping_* where upstream relies on it, this is the safety net
+[profile.dev]
+overflow-checks = false
+opt-level = 1
+
+[profile.release]
+overflow-checks = false

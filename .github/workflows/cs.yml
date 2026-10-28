@@ -1,5 +1,5 @@
 # C# port: build, unit tests, fuzz corpus regression, NuGet pack, and interop against the upstream C++ build
-# and the TypeScript port.
+# and the TypeScript and Rust ports (rust.yml runs the same interop job for Rust changes).
 #
 # The tests bind fixed UDP ports (40000, 30000, ...), so each job runs its suites one after another.
 # Jobs run on separate runners, so they can't collide with each other.
@@ -76,6 +76,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: true          # interop builds the upstream C++ in cpp/
+      - name: rust toolchain
+        run: rustup update stable --no-self-update && rustup default stable
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'

@@ -18,6 +18,9 @@ packages/
 node_modules/
 dist/
 
+# Rust port: cargo output (rust/target, interop/rust/target)
+target/
+
 # Fuzz crash inputs (cs/fuzz)
 crash-*
 
